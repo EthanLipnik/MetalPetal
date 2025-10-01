@@ -1,6 +1,6 @@
 import CoreGraphics
 
-public struct CLUTImageLayout {
+public struct CLUTImageLayout: Sendable {
     public var horizontalTileCount: UInt
     public var verticalTileCount: UInt
     public init(horizontalTileCount: UInt, verticalTileCount: UInt) {
@@ -9,7 +9,7 @@ public struct CLUTImageLayout {
     }
 }
 
-public struct CLUTImageDescriptor {
+public struct CLUTImageDescriptor: Sendable {
     public var dimension: UInt
     public var layout: CLUTImageLayout
     

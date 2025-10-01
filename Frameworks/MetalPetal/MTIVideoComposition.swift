@@ -61,7 +61,14 @@ extension AVAsynchronousVideoCompositionRequest: MTIMutableVideoCompositionReque
     }
 }
 
-public class MTIAsyncVideoCompositionRequestHandler {
+public final class MTIAsyncVideoCompositionRequestHandler: @unchecked Sendable {
+
+    private final class UncheckedSendableBox<Value>: @unchecked Sendable {
+        let value: Value
+        init(_ value: Value) {
+            self.value = value
+        }
+    }
     
     public enum Error: Swift.Error {
         case cannotGenerateOutputPixelBuffer
@@ -89,11 +96,11 @@ public class MTIAsyncVideoCompositionRequestHandler {
     
     private let tracks: [Track]
     private let context: MTIContext
-    private let filter: (Request) throws -> MTIImage
+    private let filter: @Sendable (Request) throws -> MTIImage
     private let queue: DispatchQueue?
     
     @available(*, deprecated, message: "Use init(context:tracks:on:filter:) instead.")
-    public init(context: MTIContext, tracks: [AVAssetTrack], queue: DispatchQueue = .main, filter: @escaping (Request) throws -> MTIImage) {
+    public init(context: MTIContext, tracks: [AVAssetTrack], queue: DispatchQueue = .main, filter: @escaping @Sendable (Request) throws -> MTIImage) {
         assert(tracks.count > 0)
         self.tracks = tracks.map(Track.init(track:))
         self.context = context
@@ -103,7 +110,7 @@ public class MTIAsyncVideoCompositionRequestHandler {
     
     /// Initialize a new `MTIAsyncVideoCompositionRequestHandler` object that can handle `MTIMutableVideoCompositionRequest` on the specified `queue` using `filter`.
     /// If the `queue` is nil, the `filter` block runs directly on the queue where `handle(request:)` is called.
-    public init(context: MTIContext, tracks: [AVAssetTrack], on queue: DispatchQueue?, filter: @escaping (Request) throws -> MTIImage) {
+    public init(context: MTIContext, tracks: [AVAssetTrack], on queue: DispatchQueue?, filter: @escaping @Sendable (Request) throws -> MTIImage) {
         assert(tracks.count > 0)
         self.tracks = tracks.map(Track.init(track:))
         self.context = context
@@ -127,7 +134,7 @@ public class MTIAsyncVideoCompositionRequestHandler {
         return MTITransformFilterApplyTransformToImage(image, transform, 0, 1, MTITransformFilter.minimumEnclosingViewport(for: image, transform: transform, fieldOfView: 0), .unspecified)
     }
     
-    private func enqueue(_ operation: @escaping () -> Void) {
+    private func enqueue(_ operation: @escaping @Sendable () -> Void) {
         if let queue = self.queue {
             queue.async(execute: operation)
         } else {
@@ -143,25 +150,29 @@ public class MTIAsyncVideoCompositionRequestHandler {
                 frames[track.id] = image
             }
         }
+        let requestBox = UncheckedSendableBox(request)
         guard let pixelBuffer = request.renderContext.newPixelBuffer() else {
-            self.enqueue { request.finish(.failure(Error.cannotGenerateOutputPixelBuffer)) }
+            self.enqueue { requestBox.value.finish(.failure(Error.cannotGenerateOutputPixelBuffer)) }
             return
         }
+        let sourceFramesBox = UncheckedSendableBox(sourceFrames)
+        let pixelBufferBox = UncheckedSendableBox(pixelBuffer)
         self.enqueue {
             autoreleasepool {
                 do {
+                    let request = requestBox.value
                     if (request as? MTITrackedVideoCompositionRequest)?.isCancelled == true { return }
                     
-                    let mtiRequest = Request(sourceImages: sourceFrames, compositionTime: request.compositionTime, renderSize: request.renderContext.size)
+                    let mtiRequest = Request(sourceImages: sourceFramesBox.value, compositionTime: request.compositionTime, renderSize: request.renderContext.size)
                     let image = try self.filter(mtiRequest)
                     
                     if (request as? MTITrackedVideoCompositionRequest)?.isCancelled == true { return }
                     
-                    try self.context.render(image, to: pixelBuffer)
+                    try self.context.render(image, to: pixelBufferBox.value)
                     
-                    request.finish(.success(pixelBuffer))
+                    request.finish(.success(pixelBufferBox.value))
                 } catch {
-                    request.finish(.failure(error))
+                    requestBox.value.finish(.failure(error))
                 }
             }
         }
@@ -175,12 +186,12 @@ public class MTIVideoComposition {
         case unsupportedInstruction
     }
     
-    private class Compositor: NSObject, AVVideoCompositing {
+    private final class Compositor: NSObject, AVVideoCompositing, @unchecked Sendable {
         
-        class VideoCompositionRequest: Hashable, MTIMutableVideoCompositionRequest, MTITrackedVideoCompositionRequest {
+        final class VideoCompositionRequest: Hashable, MTIMutableVideoCompositionRequest, MTITrackedVideoCompositionRequest, @unchecked Sendable {
             
             private let internalRequest: AVAsynchronousVideoCompositionRequest
-            private var completionHandler: (() -> Void)?
+            private var completionHandler: (@Sendable () -> Void)?
             private var _isCancelled: Bool = false
             private let stateLock = MTILockCreate()
             
@@ -196,10 +207,10 @@ public class MTIVideoComposition {
                 internalRequest = request
             }
             
-            fileprivate func onCompletion(_ completion: @escaping () -> Void) {
+            fileprivate func onCompletion(_ completion: @escaping @Sendable () -> Void) {
                 completionHandler = completion
             }
-                        
+
             func sourceFrame(byTrackID trackID: CMPersistentTrackID) -> CVPixelBuffer? {
                 internalRequest.sourceFrame(byTrackID: trackID)
             }
@@ -242,9 +253,9 @@ public class MTIVideoComposition {
             }
         }
         
-        class Instruction: NSObject, AVVideoCompositionInstructionProtocol {
+        final class Instruction: NSObject, AVVideoCompositionInstructionProtocol, @unchecked Sendable {
             
-            typealias Handler = (_ request: VideoCompositionRequest) -> Void
+            typealias Handler = @Sendable (_ request: VideoCompositionRequest) -> Void
             
             let timeRange: CMTimeRange
             
@@ -264,9 +275,9 @@ public class MTIVideoComposition {
             }
         }
         
-        let sourcePixelBufferAttributes: [String : Any]? = [kCVPixelBufferPixelFormatTypeKey as String: [kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange]]
+        let sourcePixelBufferAttributes: [String : any Sendable]? = [kCVPixelBufferPixelFormatTypeKey as String: [kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange]]
         
-        let requiredPixelBufferAttributesForRenderContext: [String : Any] = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+        let requiredPixelBufferAttributesForRenderContext: [String : any Sendable] = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         
         private var pendingRequests: Set<VideoCompositionRequest> = []
         private let pendingRequestsLock = MTILockCreate()
@@ -357,7 +368,7 @@ public class MTIVideoComposition {
     /// - If the asset has exactly one video track, the original timing of the source video track will be used. If the asset has more than one video track, and the nominal frame rate of any of video tracks is known, the reciprocal of the greatest known nominalFrameRate will be used as the value of frameDuration. Otherwise, a default framerate of 30fps is used.
     /// - If the specified asset is an instance of AVComposition, the renderSize will be set to the naturalSize of the AVComposition; otherwise the renderSize will be set to a value that encompasses all of the asset's video tracks.
     /// - A renderScale of 1.0.
-    public init(asset inputAsset: AVAsset, context: MTIContext, queue: DispatchQueue?, filter: @escaping (MTIAsyncVideoCompositionRequestHandler.Request) throws -> MTIImage) {
+    public init(asset inputAsset: AVAsset, context: MTIContext, queue: DispatchQueue?, filter: @escaping @Sendable (MTIAsyncVideoCompositionRequestHandler.Request) throws -> MTIImage) {
         asset = inputAsset.copy() as! AVAsset
         videoComposition = AVMutableVideoComposition(propertiesOf: asset)
         let videoTracks = asset.tracks(withMediaType: .video)

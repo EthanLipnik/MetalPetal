@@ -12,9 +12,13 @@ import MetalPetalObjectiveC.Core
 #endif
 
 extension MTIFunctionDescriptor {
-    public static let passthroughFragment: MTIFunctionDescriptor = MTIFunctionDescriptor(name: MTIFilterPassthroughFragmentFunctionName)
+    public static var passthroughFragment: MTIFunctionDescriptor {
+        MTIFunctionDescriptor(name: MTIFilterPassthroughFragmentFunctionName)
+    }
     
-    public static let passthroughVertex: MTIFunctionDescriptor = MTIFunctionDescriptor(name: MTIFilterPassthroughVertexFunctionName)
+    public static var passthroughVertex: MTIFunctionDescriptor {
+        MTIFunctionDescriptor(name: MTIFilterPassthroughVertexFunctionName)
+    }
 }
 
 extension MTIFunctionDescriptor {

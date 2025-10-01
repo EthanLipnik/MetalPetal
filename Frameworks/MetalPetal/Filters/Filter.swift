@@ -76,24 +76,26 @@ private protocol PortConnection {
 }
 
 private struct PortConnectionsBuildingContext {
-    static var contexts: [PortConnectionsBuildingContext] = []
-    
-    private var connections: [PortConnection] = []
+    private final class ContextBox: @unchecked Sendable {
+        var connections: [PortConnection] = []
+    }
+
+    @TaskLocal
+    private static var current: ContextBox?
+
+    static func withContext<R>(_ operation: () -> R) -> (result: R, connections: [PortConnection]) {
+        let box = ContextBox()
+        let result = $current.withValue(box) {
+            operation()
+        }
+        return (result, box.connections)
+    }
 
     static func add(connection: PortConnection) {
-        precondition(contexts.count > 0, "No available PortConnectionsBuildingContext. You can only use `=>` operator in FilterGraph.makeImage or FilterGraph.connect function.")
-        contexts[contexts.count - 1].connections.append(connection)
-    }
-        
-    static func push() {
-        contexts.append(PortConnectionsBuildingContext())
-    }
-    
-    static func pop() -> [PortConnection] {
-        guard let current = contexts.popLast() else {
-            fatalError()
+        guard let context = current else {
+            preconditionFailure("No available PortConnectionsBuildingContext. You can only use `=>` operator in FilterGraph.makeImage or FilterGraph.connect function.")
         }
-        return current.connections
+        context.connections.append(connection)
     }
 }
 
@@ -145,18 +147,12 @@ public class FilterGraph {
     
     public typealias ImageReceiverInputPort = Port<ImageReceiver,MTIImage?,ReferenceWritableKeyPath<ImageReceiver,MTIImage?>>
     
-    private static let builderLock = MTILockCreate()
-    
     /// Performs the `builder` block to create an output image. The `builder` block provides an `input` object and an `output` port. You can use `=>` operator to connect filters and input/output ports. One and only one port is allowed to connect to the `output` port.
     public static func makeImage<T>(input: T, builder: (T, ImageReceiverInputPort) -> Void) -> MTIImage?  {
         let outputReceiver = ImageReceiver()
-        
-        builderLock.lock()
-        PortConnectionsBuildingContext.push()
-        builder(input, Port(outputReceiver, \.image))
-        let connections = PortConnectionsBuildingContext.pop()
-        builderLock.unlock()
-        
+        let (_, connections) = PortConnectionsBuildingContext.withContext {
+            builder(input, Port(outputReceiver, \.image))
+        }
         let rootConnections = connections.filter({ $0.toObject === outputReceiver })
         if rootConnections.count != 1 {
             assertionFailure("One and only one port is allowed to connect to the graph output port. (\(rootConnections.count) currently)")
@@ -171,11 +167,7 @@ public class FilterGraph {
     }
     
     public static func connect(builder: () -> Void) {
-        builderLock.lock()
-        PortConnectionsBuildingContext.push()
-        builder()
-        let connections = PortConnectionsBuildingContext.pop()
-        builderLock.unlock()
+        let (_, connections) = PortConnectionsBuildingContext.withContext(builder)
         let context = PortConnectionContext()
         for connection in connections {
             connection.connect(context: context)
